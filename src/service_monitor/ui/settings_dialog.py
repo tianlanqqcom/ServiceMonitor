@@ -42,6 +42,9 @@ class SettingsDialog(QDialog):
         self.stop_on_exit = QCheckBox("退出监控工具时停止由它启动的服务")
         self.stop_on_exit.setChecked(values.stop_on_exit)
 
+        self.minimize_to_tray = QCheckBox("关闭窗口时缩到系统托盘（右键图标可打开界面或退出）")
+        self.minimize_to_tray.setChecked(values.minimize_to_tray)
+
         self.retention_spin = QSpinBox()
         self.retention_spin.setRange(0, 3650)
         self.retention_spin.setSuffix(" 天")
@@ -63,6 +66,7 @@ class SettingsDialog(QDialog):
         form.addRow("GPU 采集", self.gpu_check)
         form.addRow("GPU 刷新间隔", self.gpu_interval_spin)
         form.addRow("退出时", self.stop_on_exit)
+        form.addRow("关窗行为", self.minimize_to_tray)
         form.addRow("数据保留", self.retention_spin)
         form.addRow("", retention_hint)
         form.addRow("曲线最大点数", self.points_spin)
@@ -93,6 +97,7 @@ class SettingsDialog(QDialog):
             gpu_enabled=bool(self.gpu_check.isChecked()),
             gpu_interval=float(self.gpu_interval_spin.value()),
             stop_on_exit=bool(self.stop_on_exit.isChecked()),
+            minimize_to_tray=bool(self.minimize_to_tray.isChecked()),
             retention_days=int(self.retention_spin.value()),
             max_chart_points=int(self.points_spin.value()),
             default_restart_delay=float(self.restart_delay_spin.value()),

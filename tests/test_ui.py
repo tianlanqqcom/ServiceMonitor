@@ -315,3 +315,125 @@ def test_single_point_chart_still_spans_a_time_axis(qapp):
     chart.set_points([(now, 12.0)], [(now, 20.0)], domain=(now - 3600, now))
     assert chart._t1 - chart._t0 == pytest.approx(3600, abs=1)
     assert chart._x_of(now - 1800, rect) == pytest.approx(rect.center().x(), abs=2)
+
+
+class _TrayProbe:
+    """offscreen 平台没有系统托盘，用替身控制可用性，才能测关窗分支。"""
+
+    def __init__(self, available: bool):
+        self._available = available
+
+    def isSystemTrayAvailable(self) -> bool:
+        return self._available
+
+
+@pytest.fixture
+def tray_env(tmp_path, qapp, monkeypatch, request):
+    import service_monitor.ui.main_window as mw
+
+    built: list = []
+
+    def build(*, available: bool = True, minimize: bool = True):
+        monkeypatch.setattr(mw, "QSystemTrayIcon", _TrayProbe(available))
+        db = Database(tmp_path / "tray.db")
+        store = SettingsStore(tmp_path / "tray-settings.json")
+        store.update(minimize_to_tray=minimize)
+        supervisor = Supervisor(db, store)
+        window = MainWindow(db, supervisor, store)
+        window.show()
+        qapp.processEvents()
+        built.append((window, supervisor, db))
+        return window, db, supervisor, store
+
+    yield build
+    for window, supervisor, db in built:
+        window._quitting = True
+        window.close()
+        supervisor.shutdown(stop_services=True)
+        db.close()
+
+
+def start_sleeper(supervisor, db, python_exe, qapp, name="tray-svc") -> int:
+    sid = add_service(db, name, command=script_command(python_exe, "sleeper.py"), working_dir="")
+    supervisor.start()
+    supervisor.request_start(sid)
+    deadline = time.time() + 15
+    while time.time() < deadline and supervisor.state_of(sid)["status"] != STATUS_RUNNING:
+        time.sleep(0.1)
+        qapp.processEvents()
+    assert supervisor.state_of(sid)["status"] == STATUS_RUNNING
+    return sid
+
+
+def test_closing_window_hides_to_tray_and_keeps_monitoring(tray_env, qapp, python_exe):
+    window, db, supervisor, _ = tray_env()
+    sid = start_sleeper(supervisor, db, python_exe, qapp)
+    assert window.tray is not None
+
+    window.close()
+    qapp.processEvents()
+    assert not window.isVisible(), "关窗应当只是隐藏"
+    assert supervisor.state_of(sid)["status"] == STATUS_RUNNING, "缩到托盘后必须继续监控"
+    assert db.last_sessions_by_service()[sid]["ended_at"] is None
+
+    window.quit_application()
+    qapp.processEvents()
+    assert supervisor.state_of(sid)["status"] is None
+    session = db.last_sessions_by_service()[sid]
+    assert session["ended_at"] is not None
+    assert session["exit_reason"] == "stopped"
+
+
+def test_minimize_to_tray_disabled_makes_close_quit(tray_env, qapp, python_exe):
+    window, db, supervisor, _ = tray_env(minimize=False)
+    sid = start_sleeper(supervisor, db, python_exe, qapp, name="no-tray")
+
+    window.close()
+    qapp.processEvents()
+    assert supervisor.state_of(sid)["status"] is None
+
+
+def test_missing_system_tray_falls_back_to_quit(tray_env, qapp, python_exe):
+    """没有托盘的桌面环境里关窗必须真的退出，否则应用再也找不到。"""
+    window, db, supervisor, _ = tray_env(available=False)
+    sid = start_sleeper(supervisor, db, python_exe, qapp, name="no-tray-desktop")
+    assert window.tray is None
+
+    window.close()
+    qapp.processEvents()
+    assert supervisor.state_of(sid)["status"] is None
+
+
+def test_tray_menu_offers_open_and_quit(qapp):
+    from service_monitor.ui.tray import ServiceTray
+
+    tray = ServiceTray()
+    opened, quit_requests = [], []
+    tray.open_requested.connect(lambda: opened.append(1))
+    tray.quit_requested.connect(lambda: quit_requests.append(1))
+    by_text = {action.text(): action for action in tray.contextMenu().actions() if action.text()}
+    assert list(by_text) == ["打开界面", "退出监控"]
+
+    by_text["打开界面"].trigger()
+    by_text["退出监控"].trigger()
+    assert opened == [1] and quit_requests == [1]
+
+
+def test_tray_icon_paints(qapp):
+    from service_monitor.ui.tray import build_icon
+
+    icon = build_icon(0)
+    assert not icon.isNull()
+    pixmap = icon.pixmap(64, 64)
+    assert (pixmap.width(), pixmap.height()) == (64, 64)
+    assert not build_icon(3).isNull()
+
+
+def test_tray_tooltip_shows_running_count(qapp):
+    from service_monitor.ui.tray import ServiceTray
+
+    tray = ServiceTray()
+    tray.set_running_count(2)
+    assert "运行中 2 个" in tray.toolTip()
+    tray.set_running_count(0)
+    assert "运行中" not in tray.toolTip()

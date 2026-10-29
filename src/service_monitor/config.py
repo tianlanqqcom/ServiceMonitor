@@ -12,6 +12,9 @@ from pathlib import Path
 APP_NAME = "ServiceMonitor"
 ENV_HOME = "SERVICEMONITOR_HOME"
 
+# dataclass 在 `from __future__ import annotations` 下把类型存成字符串，需要自己映射
+_COERCIONS = {"float": float, "int": int, "bool": bool}
+
 
 def data_dir() -> Path:
     override = os.environ.get(ENV_HOME)
@@ -43,6 +46,7 @@ class Settings:
     gpu_enabled: bool = True
     gpu_interval: float = 5.0
     stop_on_exit: bool = True
+    minimize_to_tray: bool = True
     stop_grace: float = 5.0
     retention_days: int = 0
     default_restart_delay: float = 5.0
@@ -50,10 +54,10 @@ class Settings:
     output_page_size: int = 2000
 
     @classmethod
-    def load(cls) -> "Settings":
+    def load(cls, path: Path | None = None) -> "Settings":
         defaults = cls()
         try:
-            stored = json.loads(settings_path().read_text(encoding="utf-8"))
+            stored = json.loads((path or settings_path()).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             stored = {}
         if not isinstance(stored, dict):
@@ -61,8 +65,9 @@ class Settings:
         values = {}
         for f in fields(cls):
             raw = stored.get(f.name, getattr(defaults, f.name))
+            caster = _COERCIONS.get(f.type if isinstance(f.type, str) else "")
             try:
-                values[f.name] = f.type(raw) if f.type in ("float", "int", "bool") else raw
+                values[f.name] = caster(raw) if caster else raw
             except (TypeError, ValueError):
                 values[f.name] = getattr(defaults, f.name)
         return cls(**values)
@@ -77,7 +82,7 @@ class SettingsStore:
     def __init__(self, path: Path | None = None):
         self._lock = threading.RLock()
         self._path = path or settings_path()
-        self._settings = Settings.load()
+        self._settings = Settings.load(self._path)
 
     @property
     def values(self) -> Settings:

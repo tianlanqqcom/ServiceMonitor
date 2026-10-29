@@ -7,10 +7,12 @@ import time
 from PySide6.QtCore import QUrl, QTimer
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QMainWindow,
     QMessageBox,
     QStackedWidget,
     QStatusBar,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -20,6 +22,7 @@ from ..models import STATUS_RUNNING, STATUS_STOPPING
 from .detail_page import ServiceDetailPage
 from .service_list_page import ServiceListPage
 from .settings_dialog import SettingsDialog
+from .tray import ServiceTray
 
 STYLE = """
 QWidget { font-size: 13px; }
@@ -82,6 +85,49 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self._refresh_current_page)
         self._timer.start()
 
+        self._quitting = False
+        self._tray_hint_shown = False
+        self._tray_count = -1
+        self.tray = None
+        self._setup_tray()
+
+    # -------------------------------------------------------------------- 托盘
+
+    def _setup_tray(self) -> None:
+        """没有可用托盘（部分 Linux 桌面）时保持"关窗即退出"，否则窗口会再也找不到。"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        tray = ServiceTray(self)
+        tray.open_requested.connect(self.show_from_tray)
+        tray.quit_requested.connect(self.quit_application)
+        tray.set_running_count(len(self._live_service_ids()))
+        tray.show()
+        self.tray = tray
+        app = QApplication.instance()
+        if app is not None:
+            # 关窗只是隐藏，退出必须走 quit_application
+            app.setQuitOnLastWindowClosed(False)
+
+    def show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self._refresh_current_page()
+
+    def _update_tray(self) -> None:
+        if self.tray is None:
+            return
+        count = len(self._live_service_ids())
+        if count != self._tray_count:
+            self._tray_count = count
+            self.tray.set_running_count(count)
+
+    def _hint_in_tray(self) -> None:
+        if self._tray_hint_shown or self.tray is None:
+            return
+        self._tray_hint_shown = True
+        self.tray.notify_hidden()
+
     # -------------------------------------------------------------------- 菜单
 
     def _build_menu(self) -> None:
@@ -97,7 +143,7 @@ class MainWindow(QMainWindow):
         open_dir.triggered.connect(self._open_data_dir)
         quit_action = QAction("退出", self)
         quit_action.setShortcut(QKeySequence.Quit)
-        quit_action.triggered.connect(self.close)
+        quit_action.triggered.connect(self.quit_application)
         file_menu.addActions([add, settings, open_dir])
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
@@ -143,6 +189,7 @@ class MainWindow(QMainWindow):
             self.list_page.refresh()
         else:
             self.detail_page.update_header()
+        self._update_tray()
 
     def _on_stats(self, service_id: int) -> None:
         if self.stack.currentIndex() == 1 and service_id in (0, self.detail_page.service_id):
@@ -173,6 +220,8 @@ class MainWindow(QMainWindow):
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.settings_store, self)
         if dialog.exec() == SettingsDialog.Accepted:
+            if self.tray is None and self.settings_store.values.minimize_to_tray:
+                self._setup_tray()
             self.statusBar().showMessage("设置已保存，采样间隔等参数立即生效", 5000)
 
     def _open_data_dir(self) -> None:
@@ -200,14 +249,31 @@ class MainWindow(QMainWindow):
             f"监控数据与控制台输出保存在：{data_dir()}",
         )
 
-    def closeEvent(self, event) -> None:  # noqa: N802
-        live = [
+    def _live_service_ids(self) -> list[int]:
+        return [
             int(service["id"])
             for service in self.db.list_services()
             if self.supervisor.state_of(int(service["id"]))["status"]
             in (STATUS_RUNNING, STATUS_STOPPING)
         ]
+
+    def _confirm_exit(self) -> bool:
+        """先问再停：以前是先停服务再问，用户点"否"时服务已经被停了。"""
+        if not self._live_service_ids() or self.settings_store.values.stop_on_exit:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "服务仍在运行",
+            "有服务正在运行，且设置中未勾选“退出时停止服务”。它们会继续运行，"
+            "但下次启动本工具后无法再读取其控制台输出。确定退出？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        return answer == QMessageBox.Yes
+
+    def _shutdown_supervisor(self) -> None:
         stop_on_exit = bool(self.settings_store.values.stop_on_exit)
+        live = self._live_service_ids()
         if live and stop_on_exit:
             self.statusBar().showMessage(f"正在停止 {len(live)} 个服务…")
         self._timer.stop()
@@ -220,16 +286,39 @@ class MainWindow(QMainWindow):
             self.supervisor.shutdown(stop_services=stop_on_exit)
         except Exception as exc:
             self.statusBar().showMessage(f"退出时清理异常：{exc}", 8000)
-        if live and not stop_on_exit:
-            confirm = QMessageBox.question(
-                self,
-                "服务仍在运行",
-                "有服务正在运行，且设置中未勾选“退出时停止服务”。它们会继续运行，"
-                "但下次启动本工具后无法再读取其控制台输出。确定退出？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if confirm != QMessageBox.Yes:
-                event.ignore()
-                return
+
+    def quit_application(self) -> None:
+        """托盘菜单"退出监控"、文件→退出、以及未启用托盘时的关窗都走这里。"""
+        if self._quitting:
+            return
+        if not self._confirm_exit():
+            self.show_from_tray()
+            return
+        self._quitting = True
+        self._shutdown_supervisor()
+        if self.tray is not None:
+            self.tray.hide()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+        else:
+            self.close()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self._quitting:
+            event.accept()
+            return
+        if self.tray is not None and self.settings_store.values.minimize_to_tray:
+            event.ignore()
+            self.hide()
+            self._hint_in_tray()
+            return
+        if not self._confirm_exit():
+            event.ignore()
+            return
+        self._quitting = True
+        self._shutdown_supervisor()
         event.accept()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
