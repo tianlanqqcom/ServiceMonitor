@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# 本地数据与验证产物
+data/
+.smoke/
+*.db
+*.db-wal
+*.db-shm
+*.json.tmp
+tmp/
+shots/
+
+# 编辑器
+.idea/
+.vscode/

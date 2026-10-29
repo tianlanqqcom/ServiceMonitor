@@ -1,0 +1,6 @@
+# 运行时依赖（Windows / Linux 通用，均为官方 wheel）
+PySide6>=6.6,<7
+psutil>=5.9
+
+# 开发/测试依赖
+pytest>=8
