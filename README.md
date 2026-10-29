@@ -69,13 +69,12 @@
 
 **Windows**
 
-双击仓库根目录的 `start-monitor.bat` 即可：脚本只调用 `run.ps1`，和手动执行 `.\run.ps1`
-完全同一条路径，虚拟环境与依赖由 `run.ps1` / `setup.ps1` 准备（首次运行需要几分钟）。
-bat 会留下一个标题为 ServiceMonitor 的控制台窗口，监控期间的输出就打在上面，监控退出后
-窗口自动关闭；这个窗口还挂着的时候监控就在跑，想彻底退出请用托盘菜单的**退出监控**，
-不要直接关窗口。参数原样透传，例如 `start-monitor.bat --demo`。
+双击仓库根目录的 `start-monitor.bat` 即可：脚本只调用 `run.ps1 -Hidden`，和手动执行
+`.\run.ps1` 是同一条路径，虚拟环境与依赖由 `run.ps1` / `setup.ps1` 准备（首次运行需要几分钟，
+那一次会看到安装日志滚过）。之后双击只闪一下启动窗口，桌面上**不会留一个常驻的控制台**：
+监控挂在一个隐藏的控制台上跑，界面照常出现。
 
-想用 PowerShell 或需要传 `--demo`：
+要看实时输出或传参数，用 PowerShell 前台启动（`--demo`、`--home` 只走这条路径）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File setup.ps1   # 创建 .venv 并安装依赖

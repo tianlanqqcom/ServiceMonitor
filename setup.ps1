@@ -1,4 +1,4 @@
-# Windows 一键初始化：创建 .venv 并安装依赖
+﻿# Windows 一键初始化：创建 .venv 并安装依赖
 # 用法： powershell -ExecutionPolicy Bypass -File setup.ps1
 param(
     [string]$Python = "python"

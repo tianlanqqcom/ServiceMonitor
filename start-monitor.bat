@@ -1,18 +1,20 @@
 @echo off
-chcp 65001 >nul 2>&1
 setlocal
 title ServiceMonitor
 cd /d "%~dp0"
 
-rem 环境准备（建 .venv、装依赖）由 run.ps1 与 setup.ps1 负责，bat 只保留双击入口这一件事。
-rem 走 run.ps1（控制台版 python.exe）而不是 pythonw：被监控的服务和监控进程共用这个控制台，
-rem 停止服务时才收得到 CTRL_BREAK；nvidia-smi、taskkill 这些内部调用一律隐藏控制台。
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1" %*
+rem Keep this file ASCII-only on purpose. cmd.exe re-reads a batch file by byte offset,
+rem so a UTF-8 Chinese comment line (especially after "chcp 65001") gets torn apart and
+rem the fragment is executed as a command.
+rem -Hidden starts the GUI attached to a hidden console: no window is left on screen and
+rem monitored services still share that console, so CTRL_BREAK keeps working.
+rem First run prepares .venv through run.ps1 / setup.ps1 and takes a few minutes.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1" -Hidden
 set "RC=%ERRORLEVEL%"
 
 if not "%RC%"=="0" (
-  echo.
-  echo [错误] ServiceMonitor 以退出码 %RC% 结束，请阅读上面的提示。
+  echo [ServiceMonitor] Launcher failed with exit code %RC%.
+  echo Run "powershell -ExecutionPolicy Bypass -File run.ps1" to read the error output.
   pause
 )
 endlocal
