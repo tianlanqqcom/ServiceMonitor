@@ -1,0 +1,5 @@
+# cmd.exe 解析 .bat 时必须见到 CRLF，否则中文行会被当成命令执行
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.sh   text eol=lf

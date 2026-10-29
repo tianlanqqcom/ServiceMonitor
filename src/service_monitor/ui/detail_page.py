@@ -166,7 +166,7 @@ class ServiceDetailPage(QWidget):
         self.output.setMaximumBlockCount(MAX_VISIBLE_LINES)
         mono = QFont("Consolas" if IS_WINDOWS else "Monospace")
         mono.setStyleHint(QFont.Monospace)
-        mono.setPointSize(10)
+        # 字号交给全局样式（跟随设置的界面字号），这里只固定等宽字体族
         self.output.setFont(mono)
         self.follow = QCheckBox("跟随最新输出")
         self.follow.setChecked(True)

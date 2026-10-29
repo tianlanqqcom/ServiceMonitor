@@ -13,7 +13,7 @@ from . import __version__
 from .config import ENV_HOME, SettingsStore, db_path
 from .db import Database
 from .supervisor import Supervisor
-from .ui.main_window import MainWindow
+from .ui.main_window import MainWindow, apply_ui_font
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationDisplayName("ServiceMonitor")
 
     store = SettingsStore()
+    # 字体在建窗口之前定好，否则首个窗口按系统默认字号排一遍版再跳一次
+    apply_ui_font(app, store.values)
     db = Database(db_path())
     if args.demo:
         for name in seed_demo(db):

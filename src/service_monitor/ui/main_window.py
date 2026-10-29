@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QUrl, QTimer
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -17,15 +17,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import data_dir
+from ..config import (
+    CLOSE_ACTION_TRAY,
+    MIN_FONT_POINT,
+    Settings,
+    clamp_point_size,
+    data_dir,
+)
 from ..models import STATUS_RUNNING, STATUS_STOPPING
 from .detail_page import ServiceDetailPage
 from .service_list_page import ServiceListPage
 from .settings_dialog import SettingsDialog
 from .tray import ServiceTray
 
-STYLE = """
-QWidget { font-size: 13px; }
+# 字号由设置决定，用占位符替换而不是 f-string：QSS 里的 {} 会被 format 吞掉
+_STYLE_TEMPLATE = """
+QWidget { font-size: __BODY__pt; }
 QMainWindow, QStackedWidget, QWidget#central { background: #f5f6f8; }
 QTableWidget { background: #ffffff; alternate-background-color: #fafbfc;
                gridline-color: #eceef1; selection-background-color: #dfe9f5;
@@ -34,12 +41,37 @@ QPushButton { padding: 4px 12px; }
 QPushButton#primary { background: #2f7bd0; color: #ffffff; border: 0; border-radius: 4px;
                       padding: 5px 14px; }
 QPushButton#primary:hover { background: #276ab5; }
-QLabel#hint { color: #7a828c; font-size: 12px; }
+QLabel#hint { color: #7a828c; font-size: __HINT__pt; }
 QPlainTextEdit { background: #1e2126; color: #e6e8eb; border: 1px solid #d5d9de; }
 QComboBox, QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox { background: #ffffff;
     border: 1px solid #cdd3da; border-radius: 3px; padding: 2px 6px; }
 QSplitter::handle { background: #dfe3e8; }
 """
+
+
+def build_style(point_size) -> str:
+    body = clamp_point_size(point_size)
+    hint = max(MIN_FONT_POINT, body - 1)
+    return _STYLE_TEMPLATE.replace("__BODY__", f"{body:g}").replace("__HINT__", f"{hint:g}")
+
+
+_DEFAULT_FONT: QFont | None = None
+
+
+def apply_ui_font(app: QApplication, settings: Settings) -> None:
+    """界面字体：字体族只能靠应用字体，QSS 的 font-size 会把族名冻结成解析时的默认值。
+
+    每次从"第一次拿到的默认字体"重新构造，选回"跟随系统默认"才真的回得去。
+    """
+    global _DEFAULT_FONT
+    if _DEFAULT_FONT is None:
+        _DEFAULT_FONT = QFont(app.font())
+    font = QFont(_DEFAULT_FONT)
+    family = (settings.font_family or "").strip()
+    if family:
+        font.setFamily(family)
+    font.setPointSizeF(clamp_point_size(settings.font_point_size))
+    app.setFont(font)
 
 
 class MainWindow(QMainWindow):
@@ -50,7 +82,7 @@ class MainWindow(QMainWindow):
         self.settings_store = settings_store
         self.setWindowTitle("ServiceMonitor · 服务状态监控")
         self.resize(1240, 780)
-        self.setStyleSheet(STYLE)
+        self.apply_appearance()
 
         self.list_page = ServiceListPage(db, supervisor)
         self.detail_page = ServiceDetailPage(db, supervisor)
@@ -91,6 +123,16 @@ class MainWindow(QMainWindow):
         self.tray = None
         self._setup_tray()
 
+    # -------------------------------------------------------------------- 外观
+
+    def apply_appearance(self) -> None:
+        """字体/字号即时生效：先改应用字体，再重设样式表，顺序反了字体族会被冻结。"""
+        values = self.settings_store.values
+        app = QApplication.instance()
+        if app is not None:
+            apply_ui_font(app, values)
+        self.setStyleSheet(build_style(values.font_point_size))
+
     # -------------------------------------------------------------------- 托盘
 
     def _setup_tray(self) -> None:
@@ -113,6 +155,25 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         self._refresh_current_page()
+
+    def _sync_tray(self) -> None:
+        """按"关窗行为"设置创建或撤掉托盘图标。"""
+        if self.settings_store.values.close_action == CLOSE_ACTION_TRAY:
+            if self.tray is None:
+                self._setup_tray()
+            return
+        if self.tray is not None:
+            self.tray.hide()
+            self.tray = None
+            app = QApplication.instance()
+            if app is not None:
+                app.setQuitOnLastWindowClosed(True)
+
+    def _hides_to_tray(self) -> bool:
+        return (
+            self.tray is not None
+            and self.settings_store.values.close_action == CLOSE_ACTION_TRAY
+        )
 
     def _update_tray(self) -> None:
         if self.tray is None:
@@ -220,8 +281,8 @@ class MainWindow(QMainWindow):
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.settings_store, self)
         if dialog.exec() == SettingsDialog.Accepted:
-            if self.tray is None and self.settings_store.values.minimize_to_tray:
-                self._setup_tray()
+            self.apply_appearance()
+            self._sync_tray()
             self.statusBar().showMessage("设置已保存，采样间隔等参数立即生效", 5000)
 
     def _open_data_dir(self) -> None:
@@ -308,7 +369,7 @@ class MainWindow(QMainWindow):
         if self._quitting:
             event.accept()
             return
-        if self.tray is not None and self.settings_store.values.minimize_to_tray:
+        if self._hides_to_tray():
             event.ignore()
             self.hide()
             self._hint_in_tray()

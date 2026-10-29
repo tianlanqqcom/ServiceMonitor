@@ -7,7 +7,7 @@ import time
 import pytest
 
 from conftest import SERVICE_BASE, script_command
-from service_monitor.config import SettingsStore
+from service_monitor.config import CLOSE_ACTION_QUIT, CLOSE_ACTION_TRAY, SettingsStore
 from service_monitor.db import Database
 from service_monitor.models import STATUS_RUNNING
 from service_monitor.supervisor import Supervisor
@@ -333,11 +333,11 @@ def tray_env(tmp_path, qapp, monkeypatch, request):
 
     built: list = []
 
-    def build(*, available: bool = True, minimize: bool = True):
+    def build(*, available: bool = True, close_action: str = "tray"):
         monkeypatch.setattr(mw, "QSystemTrayIcon", _TrayProbe(available))
         db = Database(tmp_path / "tray.db")
         store = SettingsStore(tmp_path / "tray-settings.json")
-        store.update(minimize_to_tray=minimize)
+        store.update(close_action=close_action)
         supervisor = Supervisor(db, store)
         window = MainWindow(db, supervisor, store)
         window.show()
@@ -384,8 +384,8 @@ def test_closing_window_hides_to_tray_and_keeps_monitoring(tray_env, qapp, pytho
     assert session["exit_reason"] == "stopped"
 
 
-def test_minimize_to_tray_disabled_makes_close_quit(tray_env, qapp, python_exe):
-    window, db, supervisor, _ = tray_env(minimize=False)
+def test_close_action_quit_makes_window_really_exit(tray_env, qapp, python_exe):
+    window, db, supervisor, _ = tray_env(close_action=CLOSE_ACTION_QUIT)
     sid = start_sleeper(supervisor, db, python_exe, qapp, name="no-tray")
 
     window.close()

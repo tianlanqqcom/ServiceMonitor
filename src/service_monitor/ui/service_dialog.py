@@ -72,7 +72,7 @@ class ServiceDialog(QDialog):
             "支持参数、管道与重定向；监控会统计该命令派生的整棵进程树。"
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#7a8089;font-size:12px;")
+        hint.setObjectName("hint")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self

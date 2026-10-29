@@ -40,13 +40,31 @@ def settings_path() -> Path:
     return data_dir() / "settings.json"
 
 
+CLOSE_ACTION_TRAY = "tray"
+CLOSE_ACTION_QUIT = "quit"
+DEFAULT_FONT_POINT_SIZE = 10.0
+MIN_FONT_POINT = 7.0
+MAX_FONT_POINT = 24.0
+
+
+def clamp_point_size(value) -> float:
+    """字号只能落在可读区间，脏数据回退到默认值。"""
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_FONT_POINT_SIZE
+    return max(MIN_FONT_POINT, min(MAX_FONT_POINT, size))
+
+
 @dataclass
 class Settings:
     sample_interval: float = 2.0
     gpu_enabled: bool = True
     gpu_interval: float = 5.0
     stop_on_exit: bool = True
-    minimize_to_tray: bool = True
+    close_action: str = CLOSE_ACTION_TRAY
+    font_family: str = ""
+    font_point_size: float = DEFAULT_FONT_POINT_SIZE
     stop_grace: float = 5.0
     retention_days: int = 0
     default_restart_delay: float = 5.0
