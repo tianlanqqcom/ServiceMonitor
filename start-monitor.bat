@@ -6,18 +6,18 @@ cd /d "%~dp0"
 
 set "PY=%~dp0.venv\Scripts\python.exe"
 set "PYW=%~dp0.venv\Scripts\pythonw.exe"
-set "HOME=%APPDATA%\ServiceMonitor"
-set "LOG=%HOME%\launch-error.log"
+set "SM_HOME=%APPDATA%\ServiceMonitor"
+set "LOG=%SM_HOME%\launch-error.log"
 
 rem 首次运行准备环境：虚拟环境 + 依赖（控制行保持 ASCII，中文只出现在 echo 里）
 if not exist "%PY%" call :create_venv || goto :fail
 "%PY%" -c "import PySide6, psutil" >nul 2>&1 || call :install_deps || goto :fail
 
 if not exist "%PYW%" set "PYW=%PY%"
-if not exist "%HOME%" mkdir "%HOME%" 2>nul
+if not exist "%SM_HOME%" mkdir "%SM_HOME%" 2>nul
 
 rem 没有控制台窗口（pythonw），把启动异常留在日志里，否则失败无从查起
-if exist "%HOME%" (
+if exist "%SM_HOME%" (
   start "ServiceMonitor" "%PYW%" monitor.py 2>"%LOG%"
 ) else (
   start "ServiceMonitor" "%PYW%" monitor.py
