@@ -12,6 +12,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from ..process.control import HIDDEN_CONSOLE_FLAGS
+
 _LOCK = threading.Lock()
 _PROBE: dict[str, object] = {"checked_at": 0.0, "path": None}
 _PROBE_TTL = 30.0
@@ -57,7 +59,12 @@ def _run(query_flag: str, columns: str, timeout: float = 3.0) -> str | None:
     cmd = [exe, f"--{query_flag}={columns}", "--format=csv,noheader,nounits"]
     try:
         out = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout, text=True
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            text=True,
+            creationflags=HIDDEN_CONSOLE_FLAGS,
         )
     except (OSError, subprocess.SubprocessError):
         return None

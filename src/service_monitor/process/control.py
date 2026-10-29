@@ -15,11 +15,21 @@ import time
 IS_WINDOWS = sys.platform == "win32"
 
 if IS_WINDOWS:
+    # 被监控的服务不加 CREATE_NO_WINDOW：那个标志会让子进程另开一个控制台，
+    # 于是 CTRL_BREAK 再也送不进去（GenerateConsoleCtrlEvent 只能发给调用方
+    # 自己控制台里的进程组），优雅停止就退化成每次强杀。
+    # 实测也不会闪窗：stdout/stderr 是管道、stdin 是 DEVNULL，三个句柄都不指向
+    # 控制台时 conhost 根本不去创建窗口。
     _DETACH_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(
         subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0
     )
 else:
     _DETACH_FLAGS = 0
+
+# nvidia-smi、taskkill 这类内部工具就不同了：stdin 继承自本进程，从 pythonw 启动时
+# Windows 会给每一次调用单独开一个黑窗口，界面上就是一闪一闪（GPU 每 5 秒调两次，
+# 看起来就是"不定时闪一个 cmd 窗口"）。
+HIDDEN_CONSOLE_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WINDOWS else 0
 
 
 def popen_kwargs(cwd: str | None) -> dict:
@@ -134,6 +144,7 @@ def force_kill(root_pid: int, proc: subprocess.Popen | None) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=15,
+                creationflags=HIDDEN_CONSOLE_FLAGS,
             )
         except (OSError, subprocess.SubprocessError):
             pass

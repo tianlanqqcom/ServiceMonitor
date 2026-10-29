@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 from pathlib import Path
 
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from . import __version__
-from .config import ENV_HOME, SettingsStore, db_path
+from .config import ENV_HOME, SettingsStore, data_dir, db_path
 from .db import Database
 from .supervisor import Supervisor
 from .ui.main_window import MainWindow, apply_ui_font
@@ -72,6 +74,50 @@ def seed_demo(db: Database) -> list[str]:
     return created
 
 
+def instance_name() -> str:
+    """按数据目录区分实例：用 --home 打开两份数据时允许各开一个监控。"""
+    digest = hashlib.sha1(str(data_dir()).encode("utf-8")).hexdigest()[:12]
+    return f"ServiceMonitor-{digest}"
+
+
+def notify_running_instance(name: str, timeout_ms: int = 500) -> bool:
+    """通知已在运行的实例把界面调到前台；连不上说明本机没有别的实例。"""
+    socket = QLocalSocket()
+    socket.connectToServer(name)
+    if not socket.waitForConnected(timeout_ms):
+        return False
+    socket.write(b"show")
+    socket.waitForBytesWritten(500)
+    socket.disconnectFromServer()
+    return True
+
+
+def acquire_single_instance() -> QLocalServer | None:
+    """抢到返回本进程的监听服务器；已有实例在跑（或抢注失败）时返回 None。
+
+    没有这一步的话，开机自启 + 手动双击会同时跑两份监控：两个托盘图标、
+    两份采样写同一个数据库，守护重启还会互相抢进程。
+    """
+    name = instance_name()
+    if notify_running_instance(name):
+        return None
+    server = QLocalServer()
+    if server.listen(name):
+        return server
+    # Linux 上崩溃会留下 socket 文件，清掉后重试一次
+    QLocalServer.removeServer(name)
+    return server if server.listen(name) else None
+
+
+def _drain_connections(server: QLocalServer) -> None:
+    while True:
+        connection = server.nextPendingConnection()
+        if connection is None:
+            return
+        connection.abort()
+        connection.deleteLater()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.home:
@@ -80,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("ServiceMonitor")
     app.setOrganizationName("ServiceMonitor")
     app.setApplicationDisplayName("ServiceMonitor")
+
+    instance = acquire_single_instance()
+    if instance is None:
+        print("已有一个 ServiceMonitor 在运行，界面已调到前台，本次启动退出")
+        return 0
 
     store = SettingsStore()
     # 字体在建窗口之前定好，否则首个窗口按系统默认字号排一遍版再跳一次
@@ -90,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"已插入示例服务：{name}")
     supervisor = Supervisor(db, store)
     window = MainWindow(db, supervisor, store)
+    # 第二次启动只负责把已有实例的窗口叫出来，不再开第二份监控
+    instance.setParent(window)
+    instance.newConnection.connect(lambda: _drain_connections(instance))
+    instance.newConnection.connect(window.show_from_tray)
     window.show()
     supervisor.start()
     if not db.list_services():
@@ -98,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     code = app.exec()
     supervisor.shutdown(stop_services=store.values.stop_on_exit)
+    instance.close()
     db.close()
     return code
 
