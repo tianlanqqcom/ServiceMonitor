@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS services (
@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS services (
     working_dir     TEXT NOT NULL DEFAULT '',
     daemon          INTEGER NOT NULL DEFAULT 0,
     restart_delay   REAL NOT NULL DEFAULT 5,
+    launcher        INTEGER NOT NULL DEFAULT 0,
+    max_restarts    INTEGER NOT NULL DEFAULT 5,
     created_at      REAL NOT NULL,
     updated_at      REAL NOT NULL
 );
@@ -71,7 +73,22 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 """
 
-SERVICE_FIELDS = ("name", "command", "description", "working_dir", "daemon", "restart_delay")
+SERVICE_FIELDS = (
+    "name",
+    "command",
+    "description",
+    "working_dir",
+    "daemon",
+    "restart_delay",
+    "launcher",
+    "max_restarts",
+)
+
+# 老库只有 SCHEMA_VERSION=1 的那几列；CREATE TABLE IF NOT EXISTS 不会补新列，得显式 ALTER。
+SERVICE_ADDED_COLUMNS = (
+    ("launcher", "INTEGER NOT NULL DEFAULT 0"),
+    ("max_restarts", "INTEGER NOT NULL DEFAULT 5"),
+)
 
 
 class Database:
@@ -83,6 +100,7 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate_services()
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
@@ -91,6 +109,16 @@ class Database:
                 (str(SCHEMA_VERSION),),
             )
             self._conn.commit()
+
+    def _migrate_services(self) -> None:
+        """给已有库补上新增列（SQLite 的 CREATE TABLE IF NOT EXISTS 不会改已存在的表）。"""
+        present = {
+            str(row["name"]) for row in self._conn.execute("PRAGMA table_info(services)")
+        }
+        for column, ddl in SERVICE_ADDED_COLUMNS:
+            if column not in present:
+                self._conn.execute(f"ALTER TABLE services ADD COLUMN {column} {ddl}")
+        self._conn.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -412,10 +440,12 @@ class Database:
 def _default_for(field_name: str):
     if field_name in ("description", "working_dir"):
         return ""
-    if field_name in ("daemon",):
+    if field_name in ("daemon", "launcher"):
         return 0
     if field_name == "restart_delay":
         return 5.0
+    if field_name == "max_restarts":
+        return 5
     if field_name in ("name", "command"):
         return ""
     return None

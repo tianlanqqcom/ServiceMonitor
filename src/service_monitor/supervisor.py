@@ -23,6 +23,7 @@ from .config import SettingsStore
 from .db import Database
 from .metrics import gpu as gpu_mod
 from .models import (
+    DEFAULT_MAX_RESTARTS,
     REASON_CRASHED,
     REASON_EXITED,
     REASON_FAILED,
@@ -40,7 +41,8 @@ from .models import (
 from .process import control
 
 MAX_LINE_CHARS = 6000
-MAX_ATTEMPTS_BEFORE_PAUSE = 5
+# 连续失败计数在服务活着超过这么久之后归零：短暂抖动不该把配额吃光。
+ATTEMPT_RESET_AFTER = 60.0
 
 
 class SupervisorSignals(QObject):
@@ -64,6 +66,8 @@ class RunningSession:
     started_at: float
     daemon: bool = False
     restart_delay: float = 5.0
+    launcher: bool = False
+    max_restarts: int = DEFAULT_MAX_RESTARTS
     peak_rss: int = 0
     cpu: float | None = None
     rss: int | None = None
@@ -274,6 +278,11 @@ class Supervisor:
             self.sig.log_message.emit(f"[monitor] 服务 #{service_id} 不存在，无法启动")
             return
         started_at = time.time()
+        # 启动器脚本跑完就退出是正常结局，守护会把整套服务反复拆掉重装，这里直接关掉。
+        launcher = bool(row["launcher"])
+        daemon = bool(row["daemon"]) and not launcher
+        restart_delay = float(row["restart_delay"] or 5)
+        max_restarts = _int_or(row["max_restarts"], DEFAULT_MAX_RESTARTS)
         session_id = self.db.create_session(service_id, None, started_at, kind)
         try:
             proc = control.spawn(row["command"], row["working_dir"] or None)
@@ -287,8 +296,8 @@ class Supervisor:
             with self._lock:
                 self._last[service_id] = {"cpu": None, "rss": None, "gpu": None,
                                           "gpu_mem": None, "pid": None, "ts": time.time()}
-                if row["daemon"]:
-                    self._schedule_retry(service_id, row["restart_delay"])
+                if daemon:
+                    self._schedule_retry(service_id, restart_delay, max_restarts)
             return
         root_pid = int(proc.pid)
         main_pid = control.resolve_main_pid(root_pid)
@@ -300,8 +309,10 @@ class Supervisor:
             main_pid=main_pid,
             proc=proc,
             started_at=started_at,
-            daemon=bool(row["daemon"]),
-            restart_delay=float(row["restart_delay"] or 5),
+            daemon=daemon,
+            restart_delay=restart_delay,
+            launcher=launcher,
+            max_restarts=max_restarts,
         )
         session.tree = control.tree_pids(root_pid)
         self.db.set_session_pid(session_id, main_pid)
@@ -312,6 +323,14 @@ class Supervisor:
             f"[monitor] 启动成功 PID={main_pid} 命令={row['command']}"
             + (f" 工作目录={row['working_dir']}" if row["working_dir"] else ""),
         )
+        if launcher:
+            self.db.append_output(
+                session_id,
+                started_at,
+                STREAM_INFO,
+                "[monitor] 启动器脚本模式：脚本把服务拉到后台后自己退出属正常结局，监控不会重启它，"
+                "脚本留在后台的进程也不在监控的统计范围内",
+            )
         readers = [
             threading.Thread(
                 target=self._read_stream,
@@ -411,29 +430,36 @@ class Supervisor:
                 "pid": session.main_pid,
                 "ts": ended_at,
             }
-            if ended_at - session.started_at > 60:
+            if ended_at - session.started_at > ATTEMPT_RESET_AFTER:
                 self._attempts[session.service_id] = 0
             if session.daemon and not manual:
-                self._schedule_retry(session.service_id, session.restart_delay)
+                self._schedule_retry(
+                    session.service_id, session.restart_delay, session.max_restarts
+                )
         self.sig.session_finished.emit(
             session.service_id, session.session_id, exit_code, reason
         )
         self.sig.stats_changed.emit(session.service_id)
         self.sig.log_message.emit(f"[monitor] {session.service_name} {note}")
 
-    def _schedule_retry(self, service_id: int, delay: float) -> None:
-        attempts = self._attempts.get(service_id, 0) + 1
-        self._attempts[service_id] = attempts
+    def _schedule_retry(self, service_id: int, delay: float, limit: int) -> None:
+        """limit：-1 无限重试，0 不重试，正数 = 连续失败时最多拉起这么多次。
+
+        计数在服务活着超过 ATTEMPT_RESET_AFTER 后归零，所以偶发抖动不会吃光配额。
+        """
+        attempts = self._attempts.get(service_id, 0)
         self._pending_restart.pop(service_id, None)
-        if attempts > MAX_ATTEMPTS_BEFORE_PAUSE:
-            self._paused[service_id] = (
-                f"连续 {attempts - 1} 次异常退出，已暂停守护（点“启动”可恢复）"
+        if limit >= 0 and attempts >= limit:
+            detail = (
+                "重试上限为 0"
+                if limit == 0
+                else f"已重试 {attempts} 次仍未稳定运行，已达重试上限（{limit}）"
             )
-            self.sig.log_message.emit(
-                f"[monitor] 服务 #{service_id} 连续异常退出 {attempts - 1} 次，守护已暂停"
-            )
+            self._paused[service_id] = f"{detail}，守护已停止（点“启动”可恢复）"
+            self.sig.log_message.emit(f"[monitor] 服务 #{service_id} {detail}，守护已停止")
             self.sig.stats_changed.emit(service_id)
             return
+        self._attempts[service_id] = attempts + 1
         when = time.time() + max(float(delay), 1.0)
         self._pending_restart[service_id] = when
         self.sig.restart_scheduled.emit(service_id, when)
@@ -576,6 +602,14 @@ class Supervisor:
         )
         for sid in dict.fromkeys(item[0] for item in batch):
             self.sig.output_lines.emit(sid)
+
+
+def _int_or(value, fallback: int) -> int:
+    """老库里可能是 NULL；顺便挡掉写坏的浮点/字符串。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
 
 
 def _decode(raw: bytes, encoding: str) -> str:

@@ -10,6 +10,7 @@ STATUS_STOPPING = "stopping"
 STATUS_WAITING = "waiting"
 STATUS_LAUNCH_FAILED = "launch_failed"
 STATUS_INTERRUPTED = "interrupted"
+STATUS_LAUNCHER_EXITED = "launcher_exited"
 
 STATUS_LABELS = {
     STATUS_RUNNING: "运行中",
@@ -20,7 +21,11 @@ STATUS_LABELS = {
     STATUS_WAITING: "守护等待中",
     STATUS_LAUNCH_FAILED: "启动失败",
     STATUS_INTERRUPTED: "监控中断",
+    STATUS_LAUNCHER_EXITED: "脚本已退出",
 }
+
+# 守护重试上限的默认值：-1 = 无限重试，0 = 不重试，正数 = 连续失败时最多重试这么多次
+DEFAULT_MAX_RESTARTS = 5
 
 REASON_EXITED = "exited"
 REASON_CRASHED = "crashed"
@@ -98,8 +103,12 @@ def status_from_exit(reason: str, exit_code: int | None) -> str:
     return STATUS_CRASHED
 
 
-def status_from_session(session) -> str:
-    """已停止服务的外层状态取自最近一次会话。session 为 sqlite3.Row 或 None。"""
+def status_from_session(session, launcher: bool = False) -> str:
+    """已停止服务的外层状态取自最近一次会话。session 为 sqlite3.Row 或 None。
+
+    launcher=True 时，脚本正常退出后显示"脚本已退出"而不是"已退出"：服务是脚本
+    在后台拉起来的，监控跟不到它，显示成退出会让人以为服务挂了。
+    """
     if session is None:
         return STATUS_STOPPED
     if session["ended_at"] is None:
@@ -109,4 +118,7 @@ def status_from_session(session) -> str:
         return STATUS_INTERRUPTED
     if reason == REASON_FAILED:
         return STATUS_LAUNCH_FAILED
-    return status_from_exit(reason, session["exit_code"])
+    status = status_from_exit(reason, session["exit_code"])
+    if launcher and reason != REASON_STOPPED and status == STATUS_EXITED:
+        return STATUS_LAUNCHER_EXITED
+    return status

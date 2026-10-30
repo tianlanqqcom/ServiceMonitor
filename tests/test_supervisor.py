@@ -24,7 +24,15 @@ from service_monitor.supervisor import Supervisor
 from conftest import ASSETS, script_command
 
 
-def make_service(db, name: str, command: str, daemon: int = 0, delay: float = 5.0) -> int:
+def make_service(
+    db,
+    name: str,
+    command: str,
+    daemon: int = 0,
+    delay: float = 5.0,
+    launcher: int = 0,
+    max_restarts: int = 5,
+) -> int:
     return db.create_service(
         {
             "name": name,
@@ -33,6 +41,8 @@ def make_service(db, name: str, command: str, daemon: int = 0, delay: float = 5.
             "working_dir": str(ASSETS),
             "daemon": daemon,
             "restart_delay": delay,
+            "launcher": launcher,
+            "max_restarts": max_restarts,
         }
     )
 
@@ -173,15 +183,88 @@ def test_manual_stop_does_not_trigger_daemon(sup, db, python_exe):
     assert sup.state_of(sid)["status"] is None
 
 
-def test_daemon_pauses_after_repeated_failures(sup, db, monkeypatch):
-    monkeypatch.setattr(sup_mod, "MAX_ATTEMPTS_BEFORE_PAUSE", 2)
-    sid = make_service(db, "flaky", "cmd /c exit 1" if sys.platform == "win32" else "false", daemon=1)
+def test_retry_limit_stops_the_daemon_once_used_up(sup, db, python_exe, monkeypatch):
+    """上限 2 就是重试两次；用完之后状态列要能看出为什么不再拉起。"""
+    monkeypatch.setattr(sup_mod, "ATTEMPT_RESET_AFTER", 3600.0)
+    sid = make_service(
+        db, "flaky", script_command(python_exe, "exiter.py", "1"),
+        daemon=1, delay=1.0, max_restarts=2,
+    )
+    sup.request_start(sid)
+    for round_no in (1, 2):
+        wait_session_closed(sup, db, sid)
+        assert sid in sup._pending_restart, f"第 {round_no} 次失败后应继续重试"
+        time.sleep(1.05)
+        sup._handle_pending_restarts()
+    wait_session_closed(sup, db, sid)
+    assert sid not in sup._pending_restart
+    state = sup.state_of(sid)
+    assert state["status"] == STATUS_WAITING
+    assert "已达重试上限（2）" in state["paused"], state
+    assert len(db.list_sessions(sid)) == 3, "首次拉起 + 两次重试"
+
+
+def test_zero_retry_limit_never_pulls_the_service_back(sup, db, python_exe):
+    sid = make_service(
+        db, "once", script_command(python_exe, "exiter.py", "1"),
+        daemon=1, delay=1.0, max_restarts=0,
+    )
+    sup.request_start(sid)
+    wait_session_closed(sup, db, sid)
+    assert sid not in sup._pending_restart
+    assert "重试上限为 0" in sup.state_of(sid)["paused"]
+
+
+def test_infinite_retry_never_gives_up(sup):
     with sup._lock:
-        for _ in range(3):
-            sup._schedule_retry(sid, 1.0)
-        assert sid in sup._paused
-        assert sid not in sup._pending_restart
-    assert sup.state_of(sid)["status"] == STATUS_WAITING
+        for _ in range(10):
+            sup._schedule_retry(1, 1.0, -1)
+        assert 1 in sup._pending_restart
+        assert 1 not in sup._paused
+        assert sup._attempts[1] == 10
+
+
+def test_run_longer_than_the_threshold_resets_the_counter(sup, db, python_exe, monkeypatch):
+    """活过阈值就当作新一轮问题，否则偶发故障会慢慢吃光配额。"""
+    monkeypatch.setattr(sup_mod, "ATTEMPT_RESET_AFTER", 0.0)
+    sid = make_service(
+        db, "resety", script_command(python_exe, "exiter.py", "1"),
+        daemon=1, delay=1.0, max_restarts=1,
+    )
+    sup.request_start(sid)
+    for round_no in (1, 2):
+        wait_session_closed(sup, db, sid)
+        assert sid in sup._pending_restart, f"计数应已清零，第 {round_no} 轮照旧重试"
+        time.sleep(1.05)
+        sup._handle_pending_restarts()
+
+
+def test_launcher_script_exit_is_a_normal_ending(sup, db, python_exe):
+    """启动器脚本把服务拉到后台后自己退出：不重启，也不要把这说成守护失败。"""
+    sid = make_service(
+        db, "launcher", script_command(python_exe, "exiter.py", "0"),
+        daemon=1, delay=1.0, launcher=1,
+    )
+    sup.request_start(sid)
+    session = wait_session_closed(sup, db, sid)
+    assert session["exit_code"] == 0
+    assert session["exit_reason"] == "exited"
+    assert sid not in sup._pending_restart
+    assert sid not in sup._paused
+    lines = [r["line"] for r in db.output_after(session["id"], 0, 200)]
+    assert any("启动器脚本模式" in line for line in lines), lines
+
+
+def test_launcher_script_that_fails_is_still_a_crash(sup, db, python_exe):
+    sid = make_service(
+        db, "launcher-bad", script_command(python_exe, "exiter.py", "5"),
+        daemon=1, delay=1.0, launcher=1,
+    )
+    sup.request_start(sid)
+    session = wait_session_closed(sup, db, sid)
+    assert session["exit_code"] == 5
+    assert session["exit_reason"] == "crashed"
+    assert sid not in sup._pending_restart
 
 
 def test_reconcile_closes_orphan_sessions(sup, db, python_exe):

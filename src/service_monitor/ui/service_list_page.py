@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from ..models import (
     STATUS_EXITED,
+    STATUS_LAUNCHER_EXITED,
     STATUS_RUNNING,
     STATUS_STOPPING,
     duration_text,
@@ -156,7 +157,7 @@ class ServiceListPage(QWidget):
             sample = latest_samples.get(sid)
             status = state["status"] or (
                 STATUS_RUNNING if session and session["ended_at"] is None
-                else status_from_session(session)
+                else status_from_session(session, launcher=bool(service["launcher"]))
             )
             if live:
                 running += 1
@@ -164,6 +165,8 @@ class ServiceListPage(QWidget):
             item.setForeground(status_color(status))
             if state.get("paused"):
                 item.setToolTip(state["paused"])
+            elif status == STATUS_LAUNCHER_EXITED:
+                item.setToolTip("启动器脚本已正常退出：服务由它在后台拉起，后台进程不在监控的统计范围内")
             elif session is not None and session["exit_code"] is not None:
                 item.setToolTip(f"上次退出码：{session['exit_code']}")
             self.table.setItem(row, 0, item)

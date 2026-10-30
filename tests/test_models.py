@@ -41,6 +41,23 @@ def test_status_from_session_variants():
     )
 
 
+def test_launcher_script_exit_reads_as_a_normal_ending():
+    """启动器脚本退出码 0 不该显示成“已退出”：服务是它在后台拉起来的，还活得好好的。"""
+
+    class Row(dict):
+        def __getitem__(self, key):
+            return self.get(key)
+
+    clean = Row(ended_at=1, exit_reason=models.REASON_EXITED, exit_code=0)
+    assert models.status_from_session(clean) == models.STATUS_EXITED
+    assert models.status_from_session(clean, launcher=True) == models.STATUS_LAUNCHER_EXITED
+    # 脚本自己失败了仍然算异常，不能被启动器模式洗白
+    failed = Row(ended_at=1, exit_reason=models.REASON_CRASHED, exit_code=1)
+    assert models.status_from_session(failed, launcher=True) == models.STATUS_CRASHED
+    stopped = Row(ended_at=1, exit_reason=models.REASON_STOPPED, exit_code=0)
+    assert models.status_from_session(stopped, launcher=True) == models.STATUS_EXITED
+
+
 def test_labels_and_colors_are_defined_for_every_status():
     for status in models.STATUS_LABELS:
         assert models.status_label(status)

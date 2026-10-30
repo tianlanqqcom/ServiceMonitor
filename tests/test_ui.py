@@ -114,6 +114,57 @@ def test_service_dialog_roundtrip_into_db(qapp, db):
     )
 
 
+def test_service_dialog_launcher_switch_disables_daemon(qapp, db):
+    dialog = ServiceDialog(title="添加服务")
+    dialog.name_edit.setText("stack")
+    dialog.command_edit.setPlainText("tools/restart_stack.ps1")
+    dialog.daemon_check.setChecked(True)
+    assert dialog.delay_spin.isEnabled() and dialog.restarts_spin.isEnabled()
+
+    dialog.launcher_check.setChecked(True)
+    assert not dialog.daemon_check.isEnabled(), "启动器模式下守护没有意义，应禁用"
+    assert not dialog.delay_spin.isEnabled() and not dialog.restarts_spin.isEnabled()
+    values = dialog.values()
+    assert (values["launcher"], values["daemon"]) == (1, 0), "启动器模式必须落库成不守护"
+
+    dialog.launcher_check.setChecked(False)
+    assert dialog.daemon_check.isChecked(), "取消启动器后守护应保持原来的勾选"
+
+    dialog.restarts_spin.setValue(-1)
+    assert dialog.values()["max_restarts"] == -1
+    assert "无限" in dialog.restarts_hint.text()
+    dialog.restarts_spin.setValue(3)
+    assert "3 次" in dialog.restarts_hint.text()
+
+    sid = db.create_service(dialog.values())
+    again = ServiceDialog(service=db.get_service(sid), title="编辑服务")
+    assert again.values() == dialog.values()
+
+
+def test_list_page_labels_a_launcher_script_exit(env, qapp):
+    window, db, _, _ = env
+    sid = add_service(db, "stack", launcher=1)
+    session = db.create_session(sid, 4321, time.time() - 30, "manual")
+    db.finish_session(session, time.time() - 29, 0, "exited")
+    window.list_page.refresh()
+    qapp.processEvents()
+    item = window.list_page.table.item(0, 0)
+    assert item.text() == "脚本已退出"
+    assert "后台" in item.toolTip()
+
+
+def test_list_page_shows_why_the_daemon_stopped(env, qapp):
+    window, db, supervisor, _ = env
+    sid = add_service(db, "flaky")
+    with supervisor._lock:
+        supervisor._paused[sid] = "已重试 2 次仍未稳定运行，已达重试上限（2），守护已停止（点“启动”可恢复）"
+    window.list_page.refresh()
+    qapp.processEvents()
+    item = window.list_page.table.item(0, 0)
+    assert item.text() == "守护等待中"
+    assert "已达重试上限" in item.toolTip()
+
+
 def test_charts_requery_when_granularity_changes(env, qapp):
     window, db, supervisor, _ = env
     sid = add_service(db, "gamma")

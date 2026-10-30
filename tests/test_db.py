@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 
 from conftest import SERVICE_BASE
@@ -15,6 +16,8 @@ def test_service_crud(db):
     assert row["name"] == "A"
     assert row["description"] == "描述"
     assert row["daemon"] == 0
+    assert row["launcher"] == 0
+    assert row["max_restarts"] == 5
 
     db.update_service(sid, {"command": "run.sh", "daemon": 1, "restart_delay": 9.5})
     row = db.get_service(sid)
@@ -28,8 +31,6 @@ def test_service_crud(db):
 
 def test_service_name_is_unique(db):
     db.create_service({**SERVICE_BASE, "name": "dup"})
-    import sqlite3
-
     import pytest
 
     with pytest.raises(sqlite3.IntegrityError):
@@ -125,6 +126,47 @@ def test_prune_only_when_enabled(db):
     assert db.prune(30) == 1
     assert db.aggregate(service_id=sid) == []
     assert db.list_sessions(sid) == []
+
+
+V1_SERVICES_DDL = """
+CREATE TABLE services (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL UNIQUE,
+    command         TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    working_dir     TEXT NOT NULL DEFAULT '',
+    daemon          INTEGER NOT NULL DEFAULT 0,
+    restart_delay   REAL NOT NULL DEFAULT 5,
+    created_at      REAL NOT NULL,
+    updated_at      REAL NOT NULL
+);
+"""
+
+
+def test_old_database_gains_the_new_columns(tmp_path):
+    """老库只有 v1 的列；CREATE TABLE IF NOT EXISTS 不会补列，必须靠 ALTER 迁移。"""
+    path = tmp_path / "v1.db"
+    conn = sqlite3.connect(path)
+    conn.execute(V1_SERVICES_DDL)
+    conn.execute(
+        "INSERT INTO services(name, command, daemon, created_at, updated_at) "
+        "VALUES('legacy', 'run.sh', 1, 1, 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(path)
+    try:
+        row = db.get_service(1)
+        assert row["name"] == "legacy"
+        assert row["daemon"] == 1, "迁移不能动了老配置"
+        assert row["launcher"] == 0
+        assert row["max_restarts"] == 5
+        db.update_service(1, {"launcher": 1, "max_restarts": -1})
+        row = db.get_service(1)
+        assert (row["launcher"], row["max_restarts"]) == (1, -1)
+    finally:
+        db.close()
 
 
 def test_data_survives_reopen(tmp_path):
