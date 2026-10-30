@@ -113,6 +113,30 @@ def test_gpu_probe_hides_the_console_window(monkeypatch):
         assert flags == 0, "非 Windows 不该传 Windows 专有标志"
 
 
+def test_child_env_forces_unbuffered_python_output(monkeypatch):
+    """stdout 是管道时 Python 会切到 8KB 满缓冲，启动 banner 卡在缓冲区里看不见。"""
+    monkeypatch.delenv("PYTHONUNBUFFERED", raising=False)
+    assert control.child_env()["PYTHONUNBUFFERED"] == "1"
+    monkeypatch.setenv("PYTHONUNBUFFERED", "0")
+    assert control.child_env()["PYTHONUNBUFFERED"] == "0", "用户显式设过的值不该被覆盖"
+
+
+def test_startup_banner_arrives_before_the_service_exits(python_exe):
+    """不加 -u、只靠环境变量：banner 应当在进程还活着的时候就到，而不是等它退出。"""
+    proc = control.spawn(
+        f'"{python_exe}" -c "import time;print(\'BANNER\');time.sleep(20)"'
+    )
+    started = time.monotonic()
+    try:
+        line = proc.stdout.readline()
+    finally:
+        elapsed = time.monotonic() - started
+        control.force_kill(proc.pid, proc)
+        proc.wait(timeout=10)
+    assert line.strip() == b"BANNER"
+    assert elapsed < 5.0, f"等了 {elapsed:.1f}s，说明 Python 仍在满缓冲，输出憋到退出才 flush"
+
+
 def test_child_env_never_touches_the_process_environment(monkeypatch):
     monkeypatch.setenv("SERVICE_MONITOR_PROBE", "1")
     env = control.child_env()

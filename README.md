@@ -188,5 +188,9 @@ $env:QT_QPA_PLATFORM = "offscreen"
   以免界面被巨型日志拖住。
 - 控制台输出编码按 UTF-8 → 系统本地编码 → GB18030 逐级尝试，因此 Windows 上 GBK 程序
   与 Linux 上 UTF-8 程序的中文都能正确显示。
+- 服务的 stdout 是管道，Python 会切成 8KB 满缓冲，启动时打印的版本号/banner 一直躺到进程退出
+  才吐出来（被强杀就彻底丢失，stderr 是行缓冲所以请求日志照常实时刷出，反差很迷惑人）。
+  监控给服务注入 `PYTHONUNBUFFERED=1`（你已经显式设过就尊重你的值）；非 Python 服务请自己
+  flush，Linux 上的 C/C++ 程序可以包一层 `stdbuf -oL`。
 - Linux 的托盘需要面板提供 SNI/StatusNotifier 支持：KDE、XFCE、Cinnamon 直接可用，
   GNOME 需安装 AppIndicator 扩展。检测不到托盘时程序会自动退回"关窗即退出"。

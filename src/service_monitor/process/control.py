@@ -66,6 +66,10 @@ def child_env() -> dict[str, str]:
         env["PATH"] = os.pathsep.join(
             entry for entry in env["PATH"].split(os.pathsep) if not _inside_locked_package(entry)
         )
+    # 服务的 stdout 是管道，Python 于是改成 8KB 满缓冲：启动时打印的版本号、banner
+    # 一直躺在缓冲区里，界面上就是"少了开头一段"，进程被强杀后彻底丢失（stderr
+    # 是行缓冲，所以请求日志照常实时出现，反差更明显）。
+    env.setdefault("PYTHONUNBUFFERED", "1")
     return env
 
 
