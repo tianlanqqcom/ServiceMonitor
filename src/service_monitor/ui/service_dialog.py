@@ -22,19 +22,23 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..models import DEFAULT_MAX_RESTARTS
-from ..supervisor import ATTEMPT_RESET_AFTER
+from ..models import DEFAULT_MAX_RESTARTS, DEFAULT_RETRY_RESET_AFTER
 
 IS_WINDOWS = sys.platform == "win32"
 
 
 class ServiceDialog(QDialog):
-    def __init__(self, parent=None, service=None, title: str = "添加服务"):
+    def __init__(self, parent=None, service=None, title: str = "添加服务", settings=None):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
         self.resize(580, 470)
         self.setMinimumWidth(460)
+        # 添加服务时沿用设置里的默认值；编辑时下面会用服务自己的行覆盖
+        self._reset_after = max(
+            float(getattr(settings, "restart_reset_after", DEFAULT_RETRY_RESET_AFTER)), 0.0
+        )
+        default_delay = float(getattr(settings, "default_restart_delay", 5.0) or 5.0)
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("例如：推理服务")
@@ -55,13 +59,13 @@ class ServiceDialog(QDialog):
         dir_row.addWidget(browse)
 
         self.daemon_check = QCheckBox("守护模式：进程意外退出后自动重新拉起")
-        self.daemon_check.setToolTip("勾选启动器脚本后守护不会启用：脚本退出是正常结局，守护只会反复重建整套服务")
+        self.daemon_check.setToolTip("启动器脚本模式下，只有脚本以非 0 退出码结束才会重新拉起")
         self.launcher_check = QCheckBox(
-            "启动器脚本：脚本把服务拉到后台后就自己退出（不守护，后台进程也不计入统计）"
+            "启动器脚本：脚本把服务拉到后台后就自己退出（退出码 0 视为正常，后台进程不计入统计）"
         )
         self.delay_spin = QDoubleSpinBox()
         self.delay_spin.setRange(1, 3600)
-        self.delay_spin.setValue(5)
+        self.delay_spin.setValue(default_delay)
         self.delay_spin.setSuffix(" 秒")
         self.restarts_spin = QSpinBox()
         # -1 = 无限重试，0 = 不重试，正数 = 连续失败时最多拉起这么多次
@@ -73,7 +77,6 @@ class ServiceDialog(QDialog):
         self.restarts_hint.setWordWrap(True)
         self.restarts_hint.setObjectName("hint")
         self.daemon_check.toggled.connect(self._sync_enabled)
-        self.launcher_check.toggled.connect(self._sync_enabled)
         self.restarts_spin.valueChanged.connect(self._sync_restarts_hint)
         self._sync_enabled()
         self._sync_restarts_hint()
@@ -125,15 +128,13 @@ class ServiceDialog(QDialog):
             self._sync_restarts_hint()
 
     def _sync_enabled(self) -> None:
-        launcher = self.launcher_check.isChecked()
-        self.daemon_check.setEnabled(not launcher)
-        retrying = self.daemon_check.isChecked() and not launcher
+        retrying = self.daemon_check.isChecked()
         self.delay_spin.setEnabled(retrying)
         self.restarts_spin.setEnabled(retrying)
 
     def _sync_restarts_hint(self) -> None:
         limit = self.restarts_spin.value()
-        reset = int(ATTEMPT_RESET_AFTER)
+        reset = self._reset_after
         if limit < 0:
             text = "无限重试：进程每次退出后都按上面的等待时间重新拉起。"
         elif limit == 0:
@@ -141,7 +142,7 @@ class ServiceDialog(QDialog):
         else:
             text = (
                 f"连续失败时最多重试 {limit} 次，用完就停止守护（状态列会提示，点“启动”可恢复）。"
-                f"服务每存活超过 {reset} 秒会把已用次数清零。"
+                f"服务每存活超过 {reset:g} 秒会把已用次数清零（在设置窗口里改）。"
             )
         self.restarts_hint.setText(text)
 
@@ -163,15 +164,13 @@ class ServiceDialog(QDialog):
 
     def values(self) -> dict:
         command = self.command_edit.toPlainText().strip()
-        launcher = self.launcher_check.isChecked()
-        daemon = self.daemon_check.isChecked() and not launcher
         return {
             "name": self.name_edit.text().strip(),
             "command": command,
             "description": self.desc_edit.text().strip(),
             "working_dir": self.dir_edit.text().strip(),
-            "daemon": 1 if daemon else 0,
-            "launcher": 1 if launcher else 0,
+            "daemon": 1 if self.daemon_check.isChecked() else 0,
+            "launcher": 1 if self.launcher_check.isChecked() else 0,
             "restart_delay": float(self.delay_spin.value()),
             "max_restarts": int(self.restarts_spin.value()),
         }

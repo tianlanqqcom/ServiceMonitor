@@ -183,9 +183,9 @@ def test_manual_stop_does_not_trigger_daemon(sup, db, python_exe):
     assert sup.state_of(sid)["status"] is None
 
 
-def test_retry_limit_stops_the_daemon_once_used_up(sup, db, python_exe, monkeypatch):
+def test_retry_limit_stops_the_daemon_once_used_up(sup, db, store, python_exe):
     """上限 2 就是重试两次；用完之后状态列要能看出为什么不再拉起。"""
-    monkeypatch.setattr(sup_mod, "ATTEMPT_RESET_AFTER", 3600.0)
+    store.update(restart_reset_after=3600)
     sid = make_service(
         db, "flaky", script_command(python_exe, "exiter.py", "1"),
         daemon=1, delay=1.0, max_restarts=2,
@@ -224,9 +224,9 @@ def test_infinite_retry_never_gives_up(sup):
         assert sup._attempts[1] == 10
 
 
-def test_run_longer_than_the_threshold_resets_the_counter(sup, db, python_exe, monkeypatch):
-    """活过阈值就当作新一轮问题，否则偶发故障会慢慢吃光配额。"""
-    monkeypatch.setattr(sup_mod, "ATTEMPT_RESET_AFTER", 0.0)
+def test_run_longer_than_the_threshold_resets_the_counter(sup, db, store, python_exe):
+    """活过设置里的清零时长就当作新一轮问题，否则偶发故障会慢慢吃光配额。"""
+    store.update(restart_reset_after=0)
     sid = make_service(
         db, "resety", script_command(python_exe, "exiter.py", "1"),
         daemon=1, delay=1.0, max_restarts=1,
@@ -239,8 +239,9 @@ def test_run_longer_than_the_threshold_resets_the_counter(sup, db, python_exe, m
         sup._handle_pending_restarts()
 
 
-def test_launcher_script_exit_is_a_normal_ending(sup, db, python_exe):
-    """启动器脚本把服务拉到后台后自己退出：不重启，也不要把这说成守护失败。"""
+def test_launcher_script_exit_zero_is_not_restarted(sup, db, python_exe):
+    """启动器脚本 exit 0 只代表"服务已经在后台拉起"：守护开着也不该补拉，
+    否则每轮都会把整套栈拆掉重装。"""
     sid = make_service(
         db, "launcher", script_command(python_exe, "exiter.py", "0"),
         daemon=1, delay=1.0, launcher=1,
@@ -255,7 +256,8 @@ def test_launcher_script_exit_is_a_normal_ending(sup, db, python_exe):
     assert any("启动器脚本模式" in line for line in lines), lines
 
 
-def test_launcher_script_that_fails_is_still_a_crash(sup, db, python_exe):
+def test_launcher_script_with_nonzero_exit_is_restarted(sup, db, python_exe):
+    """脚本自己没跑成（非 0 退出码）就还是故障：守护照常补拉，并计入重试次数。"""
     sid = make_service(
         db, "launcher-bad", script_command(python_exe, "exiter.py", "5"),
         daemon=1, delay=1.0, launcher=1,
@@ -264,7 +266,8 @@ def test_launcher_script_that_fails_is_still_a_crash(sup, db, python_exe):
     session = wait_session_closed(sup, db, sid)
     assert session["exit_code"] == 5
     assert session["exit_reason"] == "crashed"
-    assert sid not in sup._pending_restart
+    assert sid in sup._pending_restart, "非 0 退出应触发守护重试"
+    assert sup.state_of(sid)["status"] == STATUS_WAITING
 
 
 def test_reconcile_closes_orphan_sessions(sup, db, python_exe):

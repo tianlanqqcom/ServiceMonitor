@@ -9,6 +9,8 @@ import threading
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+from .models import DEFAULT_RETRY_RESET_AFTER
+
 APP_NAME = "ServiceMonitor"
 ENV_HOME = "SERVICEMONITOR_HOME"
 
@@ -68,6 +70,7 @@ class Settings:
     stop_grace: float = 5.0
     retention_days: int = 0
     default_restart_delay: float = 5.0
+    restart_reset_after: float = DEFAULT_RETRY_RESET_AFTER
     max_chart_points: int = 240
     output_page_size: int = 2000
 

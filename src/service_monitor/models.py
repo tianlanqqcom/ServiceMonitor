@@ -26,6 +26,8 @@ STATUS_LABELS = {
 
 # 守护重试上限的默认值：-1 = 无限重试，0 = 不重试，正数 = 连续失败时最多重试这么多次
 DEFAULT_MAX_RESTARTS = 5
+# 服务每存活超过这个时长，守护的重试计数就清零：偶发抖动不该吃光配额
+DEFAULT_RETRY_RESET_AFTER = 60.0
 
 REASON_EXITED = "exited"
 REASON_CRASHED = "crashed"

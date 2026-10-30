@@ -15,6 +15,7 @@ from service_monitor.config import (
     SettingsStore,
     clamp_point_size,
 )
+from service_monitor.models import DEFAULT_RETRY_RESET_AFTER
 
 
 def test_settings_roundtrip_through_file(tmp_path):
@@ -93,3 +94,4 @@ def test_legacy_minimize_to_tray_file_still_loads(tmp_path):
     assert values.sample_interval == 3.0
     assert values.close_action == CLOSE_ACTION_TRAY
     assert values.font_family == ""
+    assert values.restart_reset_after == DEFAULT_RETRY_RESET_AFTER

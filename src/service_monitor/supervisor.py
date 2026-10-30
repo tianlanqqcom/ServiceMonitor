@@ -41,8 +41,6 @@ from .models import (
 from .process import control
 
 MAX_LINE_CHARS = 6000
-# 连续失败计数在服务活着超过这么久之后归零：短暂抖动不该把配额吃光。
-ATTEMPT_RESET_AFTER = 60.0
 
 
 class SupervisorSignals(QObject):
@@ -278,9 +276,9 @@ class Supervisor:
             self.sig.log_message.emit(f"[monitor] 服务 #{service_id} 不存在，无法启动")
             return
         started_at = time.time()
-        # 启动器脚本跑完就退出是正常结局，守护会把整套服务反复拆掉重装，这里直接关掉。
+        # 启动器脚本自己退出是正常结局，守护只对非 0 退出码补拉，见 _finalize
         launcher = bool(row["launcher"])
-        daemon = bool(row["daemon"]) and not launcher
+        daemon = bool(row["daemon"])
         restart_delay = float(row["restart_delay"] or 5)
         max_restarts = _int_or(row["max_restarts"], DEFAULT_MAX_RESTARTS)
         session_id = self.db.create_session(service_id, None, started_at, kind)
@@ -328,7 +326,7 @@ class Supervisor:
                 session_id,
                 started_at,
                 STREAM_INFO,
-                "[monitor] 启动器脚本模式：脚本把服务拉到后台后自己退出属正常结局，监控不会重启它，"
+                "[monitor] 启动器脚本模式：脚本把服务拉到后台后自己退出属正常结局，退出码 0 不会重新拉起，"
                 "脚本留在后台的进程也不在监控的统计范围内",
             )
         readers = [
@@ -430,9 +428,10 @@ class Supervisor:
                 "pid": session.main_pid,
                 "ts": ended_at,
             }
-            if ended_at - session.started_at > ATTEMPT_RESET_AFTER:
+            if ended_at - session.started_at > self._retry_reset_after():
                 self._attempts[session.service_id] = 0
-            if session.daemon and not manual:
+            # 启动器脚本 exit 0 只代表"服务已经在后台拉起"，这时补拉会把整套栈反复拆掉重装
+            if session.daemon and not manual and (not session.launcher or exit_code):
                 self._schedule_retry(
                     session.service_id, session.restart_delay, session.max_restarts
                 )
@@ -442,10 +441,14 @@ class Supervisor:
         self.sig.stats_changed.emit(session.service_id)
         self.sig.log_message.emit(f"[monitor] {session.service_name} {note}")
 
+    def _retry_reset_after(self) -> float:
+        """重试计数清零门槛（秒）；设置被手改成负数时按 0 处理，别让守护变成无限。"""
+        return max(float(self.settings.values.restart_reset_after), 0.0)
+
     def _schedule_retry(self, service_id: int, delay: float, limit: int) -> None:
         """limit：-1 无限重试，0 不重试，正数 = 连续失败时最多拉起这么多次。
 
-        计数在服务活着超过 ATTEMPT_RESET_AFTER 后归零，所以偶发抖动不会吃光配额。
+        计数在服务活着超过 _retry_reset_after() 后归零，所以偶发抖动不会吃光配额。
         """
         attempts = self._attempts.get(service_id, 0)
         self._pending_restart.pop(service_id, None)

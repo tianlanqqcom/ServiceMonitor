@@ -114,21 +114,16 @@ def test_service_dialog_roundtrip_into_db(qapp, db):
     )
 
 
-def test_service_dialog_launcher_switch_disables_daemon(qapp, db):
+def test_service_dialog_launcher_keeps_daemon_available(qapp, db):
     dialog = ServiceDialog(title="添加服务")
     dialog.name_edit.setText("stack")
     dialog.command_edit.setPlainText("tools/restart_stack.ps1")
     dialog.daemon_check.setChecked(True)
-    assert dialog.delay_spin.isEnabled() and dialog.restarts_spin.isEnabled()
-
     dialog.launcher_check.setChecked(True)
-    assert not dialog.daemon_check.isEnabled(), "启动器模式下守护没有意义，应禁用"
-    assert not dialog.delay_spin.isEnabled() and not dialog.restarts_spin.isEnabled()
+    assert dialog.daemon_check.isEnabled(), "启动器模式下守护仍要可用（只对非 0 退出补拉）"
+    assert dialog.delay_spin.isEnabled() and dialog.restarts_spin.isEnabled()
     values = dialog.values()
-    assert (values["launcher"], values["daemon"]) == (1, 0), "启动器模式必须落库成不守护"
-
-    dialog.launcher_check.setChecked(False)
-    assert dialog.daemon_check.isChecked(), "取消启动器后守护应保持原来的勾选"
+    assert (values["launcher"], values["daemon"]) == (1, 1)
 
     dialog.restarts_spin.setValue(-1)
     assert dialog.values()["max_restarts"] == -1
@@ -139,6 +134,22 @@ def test_service_dialog_launcher_switch_disables_daemon(qapp, db):
     sid = db.create_service(dialog.values())
     again = ServiceDialog(service=db.get_service(sid), title="编辑服务")
     assert again.values() == dialog.values()
+
+
+def test_service_dialog_defaults_come_from_settings(qapp):
+    from service_monitor.config import Settings
+
+    tuned = ServiceDialog(
+        title="添加服务",
+        settings=Settings(default_restart_delay=12.0, restart_reset_after=900.0),
+    )
+    tuned.daemon_check.setChecked(True)
+    assert tuned.delay_spin.value() == 12.0, "设置里的默认重启等待要真的落到新增服务上"
+    assert "900 秒" in tuned.restarts_hint.text()
+
+    plain = ServiceDialog(title="添加服务")
+    assert plain.delay_spin.value() == 5.0
+    assert "60 秒" in plain.restarts_hint.text()
 
 
 def test_list_page_labels_a_launcher_script_exit(env, qapp):

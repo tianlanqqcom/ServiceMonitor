@@ -49,7 +49,7 @@ class SettingsDialog(QDialog):
         values = store.values
         self.setWindowTitle("监控设置")
         self.setModal(True)
-        self.resize(470, 430)
+        self.resize(470, 470)
 
         self.sample_spin = QDoubleSpinBox()
         self.sample_spin.setRange(0.5, 60)
@@ -128,6 +128,12 @@ class SettingsDialog(QDialog):
         self.restart_delay_spin.setSuffix(" 秒")
         self.restart_delay_spin.setValue(values.default_restart_delay)
 
+        self.reset_after_spin = QDoubleSpinBox()
+        self.reset_after_spin.setRange(10, 86400)
+        self.reset_after_spin.setDecimals(0)
+        self.reset_after_spin.setSuffix(" 秒")
+        self.reset_after_spin.setValue(values.restart_reset_after)
+
         form = QFormLayout()
         form.addRow("采样间隔", self.sample_spin)
         form.addRow("GPU 采集", self.gpu_check)
@@ -138,6 +144,10 @@ class SettingsDialog(QDialog):
         form.addRow("", retention_hint)
         form.addRow("曲线最大点数", self.points_spin)
         form.addRow("默认守护重启等待", self.restart_delay_spin)
+        form.addRow(
+            "重试计数清零",
+            self._with_hint(self.reset_after_spin, "服务每存活超过这个时长，守护的重试次数归零"),
+        )
 
         status = QLabel(
             "检测到的 GPU 工具：" + ("nvidia-smi 可用" if gpu_mod.nvidia_available() else "未找到 nvidia-smi")
@@ -239,5 +249,6 @@ class SettingsDialog(QDialog):
             retention_days=int(self.retention_spin.value()),
             max_chart_points=int(self.points_spin.value()),
             default_restart_delay=float(self.restart_delay_spin.value()),
+            restart_reset_after=float(self.reset_after_spin.value()),
         )
         self.accept()

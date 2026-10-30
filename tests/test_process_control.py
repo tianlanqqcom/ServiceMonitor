@@ -6,9 +6,11 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
+from conftest import ASSETS
 from service_monitor.process import control
 
 SLEEP_SNIPPET = "import time; time.sleep(120)"
@@ -187,4 +189,45 @@ def test_force_kill_hides_the_taskkill_console(monkeypatch):
     control.force_kill(424242, None)
     assert recorded["cmd"][0] == "taskkill"
     assert recorded["kwargs"]["creationflags"] & subprocess.CREATE_NO_WINDOW
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="CTRL_BREAK 与控制台语义是 Windows 的事")
+def test_console_less_stop_does_not_hard_kill(monkeypatch):
+    """监控没有控制台时 send_signal 会报"句柄无效"，这时绝不能退回 proc.terminate()：
+    那等于跳过整个宽限期直接强杀，服务连收尾的机会都没有。"""
+    calls = []
+
+    class Proc:
+        def poll(self):
+            return None
+
+        def send_signal(self, sig):
+            raise OSError(9, "句柄无效。")
+
+        def terminate(self):
+            calls.append("terminate")
+
+    monkeypatch.setattr(
+        control, "_send_break_via_child_console", lambda pid: calls.append("break") or True
+    )
+    assert control.graceful_terminate(Proc(), 4242) is True
+    assert calls == ["break"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="pythonw 没有控制台，只在 Windows 上成立")
+def test_graceful_stop_reaches_the_service_without_a_monitor_console(tmp_path, python_exe):
+    """开机自启跑在 pythonw 上（这是"绝不出现控制台"的代价），停止时 CTRL_BREAK
+    仍然要送得进去：服务自己打印 GRACEFUL-BREAK 并以 0 退出，而不是被强杀。"""
+    pythonw = Path(python_exe).with_name("pythonw.exe")
+    if not pythonw.exists():
+        pytest.skip("该虚拟环境里没有 pythonw.exe")
+    result = tmp_path / "result.txt"
+    subprocess.run(
+        [str(pythonw), str(ASSETS / "console_less_stop.py"), str(result), str(python_exe)],
+        timeout=120,
+    )
+    text = result.read_text(encoding="utf-8")
+    assert "sent=True" in text, text
+    assert "GRACEFUL-BREAK" in text, text
+    assert "code=0" in text, text
 

@@ -10,6 +10,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 IS_WINDOWS = sys.platform == "win32"
@@ -156,14 +157,43 @@ def _alive(pid: int) -> bool:
         return False
 
 
+# 一个进程同时只能挂在一个控制台上，attach → send → detach 必须整段做完
+_console_lock = threading.Lock()
+
+
+def _send_break_via_child_console(root_pid: int) -> bool:
+    """把 CTRL_BREAK 送进服务自己的控制台。
+
+    监控从 pythonw（开机自启就是这条路径）启动时自己没有控制台，`send_signal` 只会
+    报"句柄无效"。这里临时附着到服务那棵进程树的控制台，只发给它自己那个进程组，
+    随后立刻 detach。实测附着期间 conhost 的窗口仍然是隐藏的（服务的三个标准句柄
+    都不指向控制台），所以既不会闪黑框，事件也不会打断监控自己。
+    """
+    import ctypes
+
+    with _console_lock:
+        kernel32 = ctypes.windll.kernel32
+        if not kernel32.AttachConsole(root_pid):
+            return False
+        try:
+            return bool(kernel32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, root_pid))
+        finally:
+            kernel32.FreeConsole()
+
+
 def graceful_terminate(proc: subprocess.Popen | None, root_pid: int) -> bool:
     """发送第一次终止信号；返回是否成功发出。"""
-    try:
-        if IS_WINDOWS:
-            if proc is not None and proc.poll() is None:
-                proc.send_signal(signal.CTRL_BREAK_EVENT)
-                return True
+    if IS_WINDOWS:
+        if proc is None or proc.poll() is not None:
             return False
+        try:
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+            return True
+        except OSError:
+            # 监控自己没有控制台（开机自启跑在 pythonw 上）时句柄无效，
+            # 绝不能退化成 proc.terminate() 直接强杀，那样服务连收尾的机会都没有
+            return _send_break_via_child_console(root_pid)
+    try:
         os.killpg(os.getpgid(root_pid), signal.SIGTERM)
         return True
     except OSError:

@@ -231,7 +231,7 @@ class ServiceListPage(QWidget):
         self.remove_button.setEnabled(has)
 
     def open_add_dialog(self) -> None:
-        dialog = ServiceDialog(self, title="添加服务")
+        dialog = ServiceDialog(self, title="添加服务", settings=self.supervisor.settings.values)
         if dialog.exec() != ServiceDialog.Accepted:
             return
         try:
@@ -246,7 +246,9 @@ class ServiceListPage(QWidget):
         service = self.db.get_service(sid) if sid else None
         if service is None:
             return
-        dialog = ServiceDialog(self, service=service, title="编辑服务")
+        dialog = ServiceDialog(
+            self, service=service, title="编辑服务", settings=self.supervisor.settings.values
+        )
         if dialog.exec() != ServiceDialog.Accepted:
             return
         self.db.update_service(sid, dialog.values())

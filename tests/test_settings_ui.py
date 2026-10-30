@@ -74,6 +74,23 @@ def test_font_controls_round_trip_through_settings(qapp, tmp_path, monkeypatch):
         box.deleteLater()
 
 
+def test_restart_settings_round_trip(dialog):
+    """重启等待与重试清零时长是守护的两个旋钮，保存后要能读回来。"""
+    box, store = dialog
+    assert box.restart_delay_spin.value() == 5.0
+    assert box.reset_after_spin.value() == 60.0
+
+    box.restart_delay_spin.setValue(8)
+    box.reset_after_spin.setValue(300)
+    box._save()
+    assert store.values.default_restart_delay == 8.0
+    assert store.values.restart_reset_after == 300.0
+
+    reopened = SettingsDialog(store, None)
+    assert reopened.reset_after_spin.value() == 300.0
+    reopened.deleteLater()
+
+
 def test_font_choices_lead_with_follow_system_default():
     choices = sd.font_choices()
     assert choices[0] == (sd.FOLLOW_SYSTEM_LABEL, "")
