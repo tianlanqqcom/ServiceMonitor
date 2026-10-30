@@ -21,3 +21,6 @@ shots/
 # 编辑器
 .idea/
 .vscode/
+
+# Coding Agents
+.codex/
