@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -68,7 +69,6 @@ def test_spawn_uses_working_directory(python_exe, tmp_path):
     proc = control.spawn(command_of(python_exe, "import os;print(os.getcwd())"), cwd=str(tmp_path))
     out = proc.stdout.readline().strip()
     proc.wait(timeout=15)
-    import os
 
     assert os.path.samefile(out, str(tmp_path))
 
@@ -111,6 +111,42 @@ def test_gpu_probe_hides_the_console_window(monkeypatch):
         assert flags & subprocess.CREATE_NO_WINDOW
     else:
         assert flags == 0, "非 Windows 不该传 Windows 专有标志"
+
+
+def test_child_env_never_touches_the_process_environment(monkeypatch):
+    monkeypatch.setenv("SERVICE_MONITOR_PROBE", "1")
+    env = control.child_env()
+    env["SERVICE_MONITOR_PROBE"] = "0"
+    assert os.environ["SERVICE_MONITOR_PROBE"] == "1"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="应用包目录是 Windows 的事")
+def test_child_env_drops_the_unexecutable_store_package_dir(monkeypatch):
+    """Store 版 Python 会把自己的包目录塞到 PATH 第 0 位，包外的进程执行不了它。
+
+    监控透传这个 PATH，服务里的 `python` 就只会打印"拒绝访问。"，
+    而用户双击同一个 bat 是好的，所以交给服务的 PATH 必须没有这一条。
+    """
+    roots = control._locked_package_roots()
+    assert roots, "Windows 上应该能算出应用包根目录"
+    poisoned = roots[0] + "\\PythonSoftwareFoundation.PythonManager_25.2.240.0_x64__3847v3x7pw1km"
+    alias = os.environ["USERPROFILE"] + "\\AppData\\Local\\Microsoft\\WindowsApps"
+    monkeypatch.setenv("PATH", os.pathsep.join([poisoned, alias, r"C:\Windows\system32"]))
+
+    kept = control.child_env()["PATH"].split(os.pathsep)
+    assert poisoned not in kept
+    assert alias in kept, "用户级 alias 目录里的 python.exe 是真正能跑的那个，不能一起删"
+    assert r"C:\Windows\system32" in kept
+    assert not any(control._inside_locked_package(entry) for entry in kept)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="应用包目录是 Windows 的事")
+def test_service_receives_a_path_it_can_actually_use(monkeypatch):
+    roots = control._locked_package_roots()
+    monkeypatch.setenv("PATH", os.pathsep.join([roots[0] + "\\FakePackage", r"C:\Windows\system32"]))
+    env = control.popen_kwargs(None)["env"]
+    assert "FakePackage" not in env["PATH"]
+    assert env["PATH"].split(os.pathsep) == [r"C:\Windows\system32"]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="taskkill 只在 Windows 上调用")

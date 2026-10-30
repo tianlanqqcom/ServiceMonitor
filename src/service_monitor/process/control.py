@@ -32,13 +32,50 @@ else:
 HIDDEN_CONSOLE_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0) if IS_WINDOWS else 0
 
 
+def _locked_package_roots() -> tuple[str, ...]:
+    """Windows 应用包的安装根；包外的进程连目录都进不去（ERROR_ACCESS_DENIED）。"""
+    if not IS_WINDOWS:
+        return ()
+    roots: list[str] = []
+    for var in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(var)
+        if not base:
+            continue
+        root = os.path.normcase(os.path.normpath(os.path.join(base, "WindowsApps")))
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
+def _inside_locked_package(entry: str) -> bool:
+    if not entry:
+        return False
+    path = os.path.normcase(os.path.normpath(entry))
+    return any(path == root or path.startswith(root + os.sep) for root in _locked_package_roots())
+
+
+def child_env() -> dict[str, str]:
+    """交给被监控服务的环境变量。
+
+    监控自己跑在 Store 版 Python 上时，解释器会把它的安装包目录塞到 PATH 第 0 位，
+    而那个目录包外的进程根本没法执行：服务里一句 `python` 命中它就只打印
+    "拒绝访问。"，用户双击同一个 bat 却是好的。留着它对子进程只有害处。
+    """
+    env = os.environ.copy()
+    if IS_WINDOWS and env.get("PATH"):
+        env["PATH"] = os.pathsep.join(
+            entry for entry in env["PATH"].split(os.pathsep) if not _inside_locked_package(entry)
+        )
+    return env
+
+
 def popen_kwargs(cwd: str | None) -> dict:
     kwargs: dict = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "stdin": subprocess.DEVNULL,
         "cwd": cwd or None,
-        "env": os.environ.copy(),
+        "env": child_env(),
     }
     if IS_WINDOWS:
         kwargs["creationflags"] = _DETACH_FLAGS

@@ -173,6 +173,10 @@ $env:QT_QPA_PLATFORM = "offscreen"
   stdin 是空设备，三个句柄都不指向控制台时 conhost 不会创建窗口。
 - 单实例锁的名字由数据目录算出来（Windows 是命名管道，Linux/macOS 是本地 socket 文件），
   异常退出后残留的 socket 文件会在下次启动时清掉并重新监听。
+- 交给服务的 PATH 会剔掉 `C:\Program Files\WindowsApps\<包名>` 这类应用包目录：监控跑在
+  商店版 Python 上时，解释器把自己的包目录塞到 PATH 第 0 位，而那个目录包外的进程无权执行，
+  服务里一句 `python` 只会打印"拒绝访问。"（`python --version` 返回 1），用户双击同一个 bat
+  却正常。剔掉之后服务解析到的就是用户平时用的 app execution alias 目录。
 - Windows 的优雅停止用 `CTRL_BREAK`，它只能发给**和自己共用控制台**的进程：所以用
   `start-monitor.bat` / `run.ps1` 启动时服务能优雅退出；开机自启（`pythonw`，没有控制台）
   时发不出去，会等满"优雅停止等待"（默认 5 秒）再强杀整棵进程树，行为与以前一致。
